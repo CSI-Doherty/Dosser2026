@@ -1,0 +1,97 @@
+---
+title: "MPEC_ATAC_Analysis"
+output: html_document
+date: "2026-08-24"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(DiffBind)
+library(tidyverse)
+```
+
+```{r}
+Samples<-dba(sampleSheet = "DiffBindSample.csv")
+Samples<-dba.count(Samples)
+Samples
+```
+
+```{r}
+info<-dba.show(Samples)
+libsizes<-cbind(LibReads=info$Reads, FRiP=info$FRiP, PeakReads=round(info$Reads*info$FRiP))
+rownames(libsizes)<-info$ID
+libsizes
+```
+
+
+```{r}
+Samples<-dba.normalize(Samples,normalize=DBA_NORM_LIB)
+norm<-dba.normalize(Samples, bRetrieve=T)
+```
+
+
+```{r}
+Samples<-dba.contrast(Samples, minMembers = 2, contrast = c("Treatment", "MPEC_Runx3", "MPEC_Ctrl"))
+Samples<-dba.analyze(Samples)
+dba.show(Samples, bContrasts = T)
+MPEC<-dba.report(Samples, contrast = 1, fold=1, bDB = T)
+MPEC<-as.data.frame(MPEC$peaks)
+write.table(MPEC[,c(1:3)], file="MPEC_DiffPeaks.bed", quote = F, sep="\t", row.names = F, col.names = F)
+#Quantify Differential Binding Sites
+sum(MPEC$Fold>0)
+sum(MPEC$Fold<0)
+```
+
+
+```{r}
+#Extract non-significant peaks
+MPEC_notDB<-dba.report(Samples, contrast = 1, fold=1, bNotDB = T)
+MPEC_notDB<-as.data.frame(MPEC_notDB$peaks)
+MPEC_All<-rbind(MPEC, MPEC_notDB)
+write.table(MPEC_All[,c(1:3)], file="AllMPECPeaks.bed", quote = F, sep="\t", row.names = F, col.names = F)
+#Shift start to align with position file from annotation
+MPEC_All$Start<-as.integer(MPEC_All$Start+1)
+```
+
+```{bash, eval=F}
+#Annotate positions with gene names with Homer
+bed2pos.pl AllMPECPeaks.bed > AllMPECPeaks.txt
+annotatePeaks.pl AllMPECPeaks.txt mm39 > AllMPECPeaks.annotated.txt
+```
+
+
+```{r}
+AnnotateAllMPEC<-read.csv(file="AllMPECPeaks.annotated.txt", sep = "\t")
+AnnotateAllMPEC_FC<-merge(MPEC_All, AnnotateAllMPEC, by=c("Chr", "Start", "End"), all.x=T)
+write.table(AnnotateAllMPEC_FC, file="AllMPECPeaks_Annotated.txt", sep="\t", quote = F, row.names = F)
+
+library(dplyr)
+#Only keep the gene name for the most significant peak for auto labeling
+AnnotateAllMPEC_FC<- AnnotateAllMPEC_FC%>%
+  group_by(Gene.Name) %>%
+  mutate(
+    Gene_Filt = if_else(row_number() == which.min(FDR),
+                       Gene.Name,
+                       "NotSignificant")
+  ) %>%
+  ungroup()
+
+library(EnhancedVolcano)
+pdf("VolcanoPlots.pdf", paper = "USr", height=10, width=6.1)
+  EnhancedVolcano(AnnotateAllMPEC_FC,
+    lab = AnnotateAllMPEC_FC$Gene_Filt,
+    x = 'Fold',pCutoff = 0.05, col=c("grey", "lightblue", "grey", "red"),
+    y = 'FDR', pointSize = 3, title="MPEC Runx3 vs Ctrl",
+    selectLab=c("Pdcd1", "Itgae", "Irf8", "Cd101", "Bcl11b", "Btg1", "Btg2", "Btg3", "Ets1", "Bach2", "Ahr", "Tgfbr1", "Smad3", "Litaf", "Nfil3"),
+    drawConnectors = T, widthConnectors = 0.75, maxoverlapsConnectors = Inf)
+
+dev.off()
+```
+
+```{r}
+sessionInfo()
+```
+ 
